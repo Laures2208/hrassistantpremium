@@ -33,6 +33,18 @@ export function getDb(): Firestore | null {
 }
 
 /**
+ * Helper: Thực thi một Promise với cơ chế Timeout an toàn, tránh treo kết nối
+ */
+export function withTimeout<T>(promise: Promise<T>, timeoutMs = 3000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout sau ${timeoutMs}ms`)), timeoutMs)
+    ),
+  ]);
+}
+
+/**
  * Kiểm tra trạng thái cấu hình Firebase Firestore
  */
 export function checkFirebaseConfigured(): boolean {
@@ -335,42 +347,74 @@ export async function getDocuments(): Promise<{
 }
 
 /**
- * addDocument: Thêm tài liệu mới vào Firestore Cloud
+ * addDocument: Thêm tài liệu mới vào Firestore Cloud (Tối ưu hóa tốc độ cao & chống tràn dung lượng 1MB)
  */
 export async function addDocument(docData: DocumentItem): Promise<boolean> {
-  let success = false;
   const activeDb = getDb();
 
+  // 1. Tối ưu hóa văn bản & chống vượt hạn mức 1MB của Firestore
+  const MAX_CHARS = 800000;
+  let cleanText = (docData.textContent || '')
+    .replace(/[\u0000-\u0008\u000B-\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n\s*\n+/g, '\n\n')
+    .trim();
+
+  if (cleanText.length > MAX_CHARS) {
+    cleanText = cleanText.substring(0, MAX_CHARS) + '\n\n[Nội dung đã được tối ưu để lưu trữ Cloud]';
+  }
+
+  const safeSummary = (docData.summary || cleanText.substring(0, 180).replace(/\n/g, ' ') + '...').slice(0, 300);
+
+  const safePayload = {
+    id: docData.id,
+    name: docData.name,
+    fileType: docData.fileType,
+    size: docData.size,
+    uploadedAt: docData.uploadedAt,
+    textContent: cleanText,
+    category: docData.category || 'regulation',
+    summary: safeSummary,
+  };
+
+  // Đồng bộ sang server backup trong background (không chặn trải nghiệm người dùng)
+  fetch('/api/documents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(safePayload),
+  }).catch((e) => console.warn('Lỗi đồng bộ server documents:', e));
+
   if (activeDb) {
+    const docRef = doc(activeDb, FIRESTORE_DOCS_COLLECTION, safePayload.id);
+
+    // Cơ chế Timeout 10 giây cho lệnh lưu Firestore
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Quá thời gian phản hồi từ Cloud Firestore (Timeout 10s)')), 10000)
+    );
+
     try {
-      const docRef = doc(activeDb, FIRESTORE_DOCS_COLLECTION, docData.id);
-      await setDoc(docRef, {
-        id: docData.id,
-        name: docData.name,
-        fileType: docData.fileType,
-        size: docData.size,
-        uploadedAt: docData.uploadedAt,
-        textContent: docData.textContent,
-        category: docData.category || 'regulation',
-        summary: docData.summary || '',
-      });
-      console.log(`[Firestore] Đã thêm tài liệu "${docData.name}" vào collection "documents".`);
-      success = true;
-    } catch (err) {
+      await Promise.race([setDoc(docRef, safePayload), timeoutPromise]);
+      console.log(`[Firestore] Đã lưu tài liệu "${safePayload.name}" lên Cloud thành công!`);
+      return true;
+    } catch (err: any) {
       console.error('[Firestore] Lỗi thêm tài liệu:', err);
+      // Ném lỗi để tầng giao diện xử lý hủy thanh tiến trình và thông báo cho người dùng
+      throw new Error(err?.message || 'Không thể lưu tài liệu lên Cloud Firestore');
     }
   }
 
-  // Đồng bộ sang server backup
-  try {
-    await fetch('/api/documents', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(docData),
-    });
-  } catch (_) {}
+  return true;
+}
 
-  return success;
+/**
+ * addDocumentsBatch: Lưu nhiều tài liệu song song lên Firestore Cloud siêu tốc
+ */
+export async function addDocumentsBatch(docs: DocumentItem[]): Promise<boolean> {
+  const promises = docs.map((d) => addDocument(d));
+  const results = await Promise.allSettled(promises);
+  return results.some((r) => r.status === 'fulfilled' && r.value === true);
 }
 
 /**
