@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Loader2 } from 'lucide-react';
 import { Header } from './components/Header';
 import { ChatMessageItem } from './components/ChatMessageItem';
 import { ChatInput } from './components/ChatInput';
@@ -15,7 +16,8 @@ import {
   AppConfig,
   ThemeMode,
 } from './types';
-import { fetchInitialDocuments } from './services/firebase';
+import { isFirebaseConfigured } from './config/firebase';
+import { getGlobalSettings, getDocuments } from './services/firestoreService';
 import { getDailyQuota, incrementDailyQuota } from './services/quota';
 import { streamGeminiResponse, DEFAULT_MODEL } from './services/gemini';
 
@@ -57,6 +59,7 @@ export default function App() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [docSource, setDocSource] = useState<'firestore' | 'sample' | 'local'>('sample');
   const [isDocsLoading, setIsDocsLoading] = useState(true);
+  const [isHydrating, setIsHydrating] = useState(true);
 
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -102,15 +105,29 @@ export default function App() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // 1. Fetch initial documents ONCE on boot from Firebase Firestore (Single Source of Truth)
+  // 3. TỰ ĐỘNG NẠP DỮ LIỆU KHI KHỞI CHẠY (APP HYDRATION)
   useEffect(() => {
-    async function loadDocs() {
+    async function initAppData() {
+      setIsHydrating(true);
       setIsDocsLoading(true);
+
       try {
-        console.log('[App] Tự động tải dữ liệu từ Firebase Firestore (Single Source of Truth)...');
-        const result = await fetchInitialDocuments();
-        
-        // Quy tắc đè dữ liệu mẫu: NẾU Firestore có ít nhất 1 file -> XÓA HOÀN TOÀN dữ liệu mẫu (Sample data)
+        console.log('[App] Bắt đầu initAppData: Đồng bộ dữ liệu cloud từ Firebase Firestore...');
+
+        // 1. Nạp settings/global_config từ Firestore ➔ Cập nhật Mật khẩu Admin mới nhất
+        const cloudSettings = await getGlobalSettings();
+        if (cloudSettings?.adminPassword) {
+          console.log('[App] Đã đồng bộ Mật khẩu Admin từ Firestore Cloud');
+          setConfig((prev) => ({
+            ...prev,
+            customAdminPassword: cloudSettings.adminPassword,
+          }));
+        }
+
+        // 2. Nạp list file từ collection "documents" trên Firestore ➔ Cập nhật bộ tri thức cho AI
+        const result = await getDocuments();
+
+        // Quy tắc đè dữ liệu mẫu: NẾU Firestore có ít nhất 1 file ➔ XÓA HOÀN TOÀN dữ liệu mẫu
         if (result.documents.length > 0 && result.source !== 'sample') {
           console.log(`[App] Nhận ${result.documents.length} tài liệu thực tế từ ${result.source}. Đã loại bỏ 100% dữ liệu mẫu.`);
           setDocuments(result.documents);
@@ -121,12 +138,14 @@ export default function App() {
           setDocSource('sample');
         }
       } catch (err) {
-        console.error('[App] Lỗi khi tải tài liệu ban đầu:', err);
+        console.error('[App] Lỗi khi nạp dữ liệu khởi chạy:', err);
       } finally {
+        setIsHydrating(false);
         setIsDocsLoading(false);
       }
     }
-    loadDocs();
+
+    initAppData();
   }, []);
 
   // 2. Load previous chat history from localStorage
@@ -318,6 +337,17 @@ export default function App() {
         onToggleTheme={handleToggleTheme}
       />
 
+      {/* Hiệu ứng Loading nhẹ ("Đang đồng bộ dữ liệu cloud...") khi trang web vừa tải xong lần đầu */}
+      {isHydrating && (
+        <div
+          id="cloud-hydration-banner"
+          className="fixed top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 rounded-full border border-amber-500/40 bg-white/95 px-4 py-1.5 text-xs font-semibold text-slate-800 shadow-xl shadow-amber-500/10 backdrop-blur-md dark:border-amber-500/30 dark:bg-slate-900/95 dark:text-amber-300 transition-all duration-300 animate-pulse"
+        >
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-500" />
+          <span>Đang đồng bộ dữ liệu cloud...</span>
+        </div>
+      )}
+
       {/* 2. Main Chat Workspace */}
       <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-4 py-4 sm:px-6">
         {/* Messages Container */}
@@ -355,6 +385,23 @@ export default function App() {
         onSendMessage={handleSendMessage}
         onStopStreaming={handleStopStreaming}
       />
+
+      {/* Footer banner when Firebase is not configured */}
+      {!isFirebaseConfigured && (
+        <div
+          id="firebase-status-footer-banner"
+          className="w-full border-t border-amber-300/50 bg-amber-50/95 py-1.5 px-4 text-center text-xs font-medium text-amber-900 dark:border-amber-900/50 dark:bg-slate-900/90 dark:text-amber-300 backdrop-blur-xs flex items-center justify-center gap-1.5 z-30"
+        >
+          <span>⚠️ Firebase chưa được cấu hình. Ứng dụng đang chạy ở chế độ Dữ liệu mẫu cục bộ.</span>
+          <button
+            type="button"
+            onClick={() => handleOpenAdminModal('settings')}
+            className="ml-1 text-[11px] underline font-semibold text-amber-950 dark:text-amber-200 hover:text-amber-600 dark:hover:text-amber-100 transition"
+          >
+            (Cấu hình ngay)
+          </button>
+        </div>
+      )}
 
       {/* 4. Admin Protected Modals */}
       {/* Auth Modal */}

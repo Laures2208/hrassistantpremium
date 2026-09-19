@@ -10,7 +10,8 @@ export interface FirebaseConfigOptions {
   appId?: string;
 }
 
-export const firebaseConfig: FirebaseConfigOptions = {
+// 1. Đọc các thông số cấu hình Firebase từ biến môi trường Vite (import.meta.env)
+const envConfig: FirebaseConfigOptions = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "",
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || (import.meta.env.VITE_FIREBASE_PROJECT_ID ? `${import.meta.env.VITE_FIREBASE_PROJECT_ID}.firebaseapp.com` : ""),
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "",
@@ -19,45 +20,55 @@ export const firebaseConfig: FirebaseConfigOptions = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID || "",
 };
 
-// Check if custom config was saved via Admin UI or cached locally
+export const firebaseConfig = envConfig;
+
+// Hỗ trợ kiểm tra cấu hình tùy chỉnh đã lưu trong localStorage hoặc từ server
 export function getActiveFirebaseConfig(): FirebaseConfigOptions {
-  if (firebaseConfig.apiKey && firebaseConfig.projectId) {
-    return firebaseConfig;
+  if (envConfig.apiKey && envConfig.projectId) {
+    return envConfig;
   }
   try {
-    const saved = localStorage.getItem('tro_ly_phap_ly_custom_firebase_config');
+    const saved = localStorage.getItem("tro_ly_phap_ly_custom_firebase_config");
     if (saved) {
       const parsed = JSON.parse(saved);
       if (parsed?.apiKey && parsed?.projectId) {
-        return { ...firebaseConfig, ...parsed };
+        return { ...envConfig, ...parsed };
       }
     }
   } catch (e) {
-    console.warn('[Firebase] Không thể đọc cấu hình tùy chỉnh từ localStorage:', e);
+    console.warn("[Firebase] Không thể đọc cấu hình tùy chỉnh:", e);
   }
-  return firebaseConfig;
+  return envConfig;
 }
 
 const activeConfig = getActiveFirebaseConfig();
 
-// Safe initialization - Tránh khởi tạo lặp lại app & tránh crash khi chưa điền env
+// 2. Viết mã kiểm tra an toàn (Graceful Check)
+// Nếu phát hiện thiếu các biến môi trường, KHÔNG làm ứng dụng bị sập màn hình trắng (White Screen of Death)
+export const isFirebaseConfigured: boolean = Boolean(
+  activeConfig.apiKey && activeConfig.projectId && activeConfig.apiKey.trim() !== "" && activeConfig.projectId.trim() !== ""
+);
+
 let initializedApp: FirebaseApp | null = null;
 let firestoreDb: Firestore | null = null;
 
 try {
-  if (activeConfig.apiKey && activeConfig.projectId) {
+  if (isFirebaseConfigured && activeConfig.apiKey && activeConfig.projectId) {
     initializedApp = getApps().length === 0 ? initializeApp(activeConfig) : getApp();
     firestoreDb = getFirestore(initializedApp);
+    console.log("[Firebase] Khởi tạo kết nối Firebase Firestore thành công!");
+  } else {
+    console.info("[Firebase] Chưa có thông tin cấu hình Firebase. Ứng dụng chạy ở chế độ dự phòng an toàn (Local Fallback).");
   }
 } catch (error) {
-  console.warn("[Firebase] Khởi tạo an toàn (chờ cấu hình API Key hoàn tất):", error);
+  console.warn("[Firebase] Khởi tạo an toàn (tránh sập ứng dụng):", error);
 }
 
 export const app = initializedApp;
 export const db = firestoreDb;
 
 /**
- * Tái cấu hình hoặc nạp cấu hình mới (ví dụ khi Admin nhập cấu hình qua giao diện hoặc tải từ server)
+ * Tái cấu hình hoặc nạp cấu hình mới khi Admin nhập qua giao diện Cài đặt
  */
 export function reinitFirebase(newConfig: FirebaseConfigOptions): Firestore | null {
   try {
@@ -66,7 +77,7 @@ export function reinitFirebase(newConfig: FirebaseConfigOptions): Firestore | nu
     firestoreDb = getFirestore(fbApp);
     return firestoreDb;
   } catch (err) {
-    console.error('[Firebase] Lỗi khi re-init Firebase với cấu hình mới:', err);
+    console.error("[Firebase] Lỗi khi re-init Firebase:", err);
     return null;
   }
 }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Lock, KeyRound, AlertCircle, X, ShieldCheck } from 'lucide-react';
+import { Lock, KeyRound, AlertCircle, X, ShieldCheck, Loader2 } from 'lucide-react';
 import { AdminModalType } from '../types';
+import { verifyAdminPassword } from '../services/firebase';
 
 interface AdminAuthModalProps {
   isOpen: boolean;
@@ -19,6 +20,7 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
 }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isVerifying, setIsVerifying] = useState(false);
   const [isShaking, setIsShaking] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -26,28 +28,51 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
     if (isOpen) {
       setPassword('');
       setError(null);
+      setIsVerifying(false);
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const envPassword =
-      typeof import.meta !== 'undefined' && import.meta.env
-        ? import.meta.env.VITE_ADMIN_PASSWORD
-        : undefined;
+    if (!password.trim()) {
+      setError('Vui lòng nhập mật khẩu Admin');
+      return;
+    }
 
-    const expectedPassword = customAdminPassword || envPassword || '123456';
+    setIsVerifying(true);
+    setError(null);
 
-    if (password.trim() === expectedPassword.trim()) {
-      setError(null);
-      onSuccess(targetModal);
-    } else {
-      setError('Mật khẩu Admin không chính xác!');
+    try {
+      // 1. Kiểm tra trực tiếp với Firestore settings/global_config
+      const isValid = await verifyAdminPassword(password);
+      if (isValid) {
+        setError(null);
+        onSuccess(targetModal);
+      } else {
+        // Fallback kiểm tra customAdminPassword từ state/env
+        const envPassword =
+          typeof import.meta !== 'undefined' && import.meta.env
+            ? import.meta.env.VITE_ADMIN_PASSWORD
+            : undefined;
+        const expected = customAdminPassword || envPassword || '123456';
+        if (password.trim() === expected.trim()) {
+          setError(null);
+          onSuccess(targetModal);
+        } else {
+          setError('Mật khẩu Admin không chính xác!');
+          setIsShaking(true);
+          setTimeout(() => setIsShaking(false), 600);
+        }
+      }
+    } catch (err) {
+      setError('Lỗi kết nối xác thực mật khẩu. Vui lòng thử lại!');
       setIsShaking(true);
       setTimeout(() => setIsShaking(false), 600);
+    } finally {
+      setIsVerifying(false);
     }
   };
 
@@ -140,10 +165,20 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
             </button>
             <button
               type="submit"
-              className="flex items-center gap-2 rounded-xl bg-amber-500 px-5 py-2 text-xs font-semibold text-slate-950 shadow-md shadow-amber-500/20 hover:bg-amber-400 active:scale-95 transition"
+              disabled={isVerifying}
+              className="flex items-center gap-2 rounded-xl bg-amber-500 px-5 py-2 text-xs font-semibold text-slate-950 shadow-md shadow-amber-500/20 hover:bg-amber-400 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
             >
-              <KeyRound className="h-3.5 w-3.5" />
-              Xác nhận Đăng nhập
+              {isVerifying ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>Đang xác thực...</span>
+                </>
+              ) : (
+                <>
+                  <KeyRound className="h-3.5 w-3.5" />
+                  <span>Xác nhận Đăng nhập</span>
+                </>
+              )}
             </button>
           </div>
         </form>

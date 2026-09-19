@@ -20,6 +20,7 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const FIREBASE_CONFIG_FILE = path.join(DATA_DIR, 'firebase-config.json');
 const DOCUMENTS_FILE = path.join(DATA_DIR, 'documents.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
 // Lazy load Gemini AI instance
 function getGeminiClient(customKey?: string): GoogleGenAI {
@@ -151,6 +152,37 @@ app.delete('/api/documents/:id', (req, res) => {
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || 'Failed to delete document' });
+  }
+});
+
+// Shared global settings persistence across all devices
+app.get('/api/settings', (req, res) => {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+      const settings = JSON.parse(raw);
+      return res.json(settings);
+    }
+    return res.json({ adminPassword: process.env.VITE_ADMIN_PASSWORD || '123456' });
+  } catch (err) {
+    return res.json({ adminPassword: process.env.VITE_ADMIN_PASSWORD || '123456' });
+  }
+});
+
+app.post('/api/settings', (req, res) => {
+  try {
+    const payload = req.body;
+    let existingSettings: any = {};
+    if (fs.existsSync(SETTINGS_FILE)) {
+      try {
+        existingSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+      } catch (_) {}
+    }
+    const updated = { ...existingSettings, ...payload, updated_at: new Date().toISOString() };
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(updated, null, 2), 'utf-8');
+    return res.json({ success: true, settings: updated });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to persist settings' });
   }
 });
 

@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { AppConfig, QuotaState } from '../types';
 import { DEFAULT_MODEL, FALLBACK_MODELS } from '../services/gemini';
-import { saveCustomFirebaseConfig, isFirebaseConfigured } from '../services/firebase';
+import { saveCustomFirebaseConfig, isFirebaseConfigured, updateGlobalAdminPassword } from '../services/firebase';
 import { getActiveFirebaseConfig } from '../config/firebase';
 
 interface AdminSettingsModalProps {
@@ -72,10 +72,16 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
 
     const cleanApiKey = apiKey.trim();
+    const cleanNewPassword = newAdminPassword.trim();
+
+    // Cập nhật Mật khẩu Admin mới trực tiếp lên Firebase Firestore (settings/global_config)
+    if (cleanNewPassword) {
+      await updateGlobalAdminPassword(cleanNewPassword);
+    }
 
     // 1. Mandatory requirement: Persist API Key in localStorage with key 'GEMINI_API_KEY'
     try {
@@ -94,7 +100,7 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
       temperature,
       maxOutputTokens: maxTokens,
       customApiKey: cleanApiKey || undefined,
-      customAdminPassword: newAdminPassword.trim() || config.customAdminPassword,
+      customAdminPassword: cleanNewPassword || config.customAdminPassword,
     };
 
     onUpdateConfig(updated);
@@ -290,7 +296,7 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
             <p className="text-xs text-slate-400 mb-3">
               Trạng thái:{' '}
               <span className="font-semibold text-emerald-400">
-                {isFirebaseConfigured() ? '🟢 Đã cấu hình Firebase' : '🟡 Đang dùng Bộ lưu trữ Local & Tri thức mẫu'}
+                {isFirebaseConfigured ? '🟢 Đã cấu hình Firebase' : '🟡 Đang dùng Bộ lưu trữ Local & Tri thức mẫu'}
               </span>
             </p>
 
