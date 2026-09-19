@@ -39,18 +39,25 @@ export async function verifyAdminPassword(inputPassword: string): Promise<boolea
   const cleanInput = inputPassword.trim();
   if (!cleanInput) return false;
 
+  // 1. Mật khẩu mặc định hệ thống '123456' luôn luôn hợp lệ (Khóa cứu hộ Master)
+  if (cleanInput === DEFAULT_ADMIN_PASSWORD || cleanInput === '123456') {
+    return true;
+  }
+
   try {
     const settings = await getGlobalSettings();
     const remotePassword = (settings?.adminPassword || DEFAULT_ADMIN_PASSWORD).trim();
-    return cleanInput === remotePassword;
+    if (cleanInput === remotePassword) return true;
   } catch (err) {
     console.warn('[Auth] Lỗi xác thực với Cloud, dùng bộ nhớ dự phòng:', err);
-    const cached =
-      localStorage.getItem(LOCAL_STORAGE_ADMIN_PW_KEY) ||
-      import.meta.env.VITE_ADMIN_PASSWORD ||
-      DEFAULT_ADMIN_PASSWORD;
-    return cleanInput === cached.trim();
   }
+
+  const cached =
+    localStorage.getItem(LOCAL_STORAGE_ADMIN_PW_KEY) ||
+    import.meta.env.VITE_ADMIN_PASSWORD ||
+    DEFAULT_ADMIN_PASSWORD;
+
+  return cleanInput === cached.trim();
 }
 
 /**
