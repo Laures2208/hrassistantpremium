@@ -114,18 +114,76 @@ export async function getGlobalSettings(): Promise<GlobalConfigDoc> {
 }
 
 /**
+ * updateAdminPasswordOnCloud: Lưu Mật khẩu Admin mới lên Firebase Firestore và LocalStorage
+ */
+export const updateAdminPasswordOnCloud = async (newPassword: string): Promise<boolean> => {
+  const cleanPassword = (newPassword || '').trim();
+  if (!cleanPassword) {
+    throw new Error('Mật khẩu Admin không được để trống');
+  }
+
+  const activeDb = getDb();
+  const timestamp = new Date().toISOString();
+
+  // 1. Lưu dự phòng vào LocalStorage ngay lập tức
+  try {
+    localStorage.setItem("admin_password", cleanPassword);
+    localStorage.setItem(LOCAL_STORAGE_ADMIN_PW_KEY, cleanPassword);
+  } catch (lsErr) {
+    console.warn("Lỗi lưu LocalStorage:", lsErr);
+  }
+
+  // 2. Lưu lên Firestore với { merge: true }
+  if (activeDb) {
+    try {
+      const settingsRef = doc(activeDb, "settings", "global_config");
+      await setDoc(
+        settingsRef,
+        {
+          adminPassword: cleanPassword,
+          updatedAt: timestamp,
+          updated_at: timestamp,
+        },
+        { merge: true }
+      );
+      console.log("✅ Đã cập nhật Mật khẩu Admin thành công lên Firebase!");
+    } catch (error) {
+      console.error("❌ Lỗi khi lưu Mật khẩu Admin lên Firebase:", error);
+      throw error;
+    }
+  } else {
+    console.warn("⚠️ Firebase chưa kết nối, đã lưu mật khẩu vào LocalStorage");
+  }
+
+  // 3. Đồng bộ dự phòng lên server API
+  try {
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminPassword: cleanPassword, updated_at: timestamp }),
+    }).catch(() => {});
+  } catch (_) {}
+
+  return true;
+};
+
+/**
  * updateGlobalSettings: Cập nhật Mật khẩu Admin mới và Cài đặt lên Cloud
  */
 export async function updateGlobalSettings(settingsData: Partial<GlobalConfigDoc>): Promise<boolean> {
   const cleanPassword = (settingsData.adminPassword || '').trim();
+  if (cleanPassword) {
+    return updateAdminPasswordOnCloud(cleanPassword);
+  }
+
+  const activeDb = getDb();
   const payload: GlobalConfigDoc = {
-    adminPassword: cleanPassword || DEFAULT_ADMIN_PASSWORD,
+    adminPassword: DEFAULT_ADMIN_PASSWORD,
     updated_at: new Date().toISOString(),
     ...settingsData,
   };
 
   let savedToFirestore = false;
-  const activeDb = getDb();
 
   if (activeDb) {
     try {
@@ -137,22 +195,6 @@ export async function updateGlobalSettings(settingsData: Partial<GlobalConfigDoc
       console.error('[Firestore] Lỗi ghi settings/global_config lên Firestore:', err);
     }
   }
-
-  // Cập nhật bộ nhớ tạm localStorage
-  if (cleanPassword) {
-    try {
-      localStorage.setItem(LOCAL_STORAGE_ADMIN_PW_KEY, cleanPassword);
-    } catch (_) {}
-  }
-
-  // Đồng bộ lên server backup
-  try {
-    await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch (_) {}
 
   return savedToFirestore;
 }

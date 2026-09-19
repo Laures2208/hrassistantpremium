@@ -48,10 +48,8 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
     setError(null);
 
     try {
-      // 1. Mật khẩu mặc định 123456 luôn được chấp nhận tuyệt đối
+      // 1. Mật khẩu mặc định 123456 luôn được chấp nhận tuyệt đối (Master Emergency Key)
       if (cleanPassword === '123456' || cleanPassword === DEFAULT_ADMIN_PASSWORD) {
-        // Đồng bộ lại 123456 lên Firestore và LocalStorage nếu trước đó bị sai lệch
-        updateGlobalSettings({ adminPassword: '123456' }).catch(() => {});
         setError(null);
         onSuccess(targetModal);
         return;

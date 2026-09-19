@@ -12,10 +12,19 @@ import {
   Sliders,
   Database,
   Lock,
+  Eye,
+  EyeOff,
+  Loader2,
 } from 'lucide-react';
 import { AppConfig, QuotaState } from '../types';
 import { DEFAULT_MODEL, FALLBACK_MODELS } from '../services/gemini';
-import { saveCustomFirebaseConfig, isFirebaseConfigured, updateGlobalAdminPassword } from '../services/firebase';
+import {
+  saveCustomFirebaseConfig,
+  isFirebaseConfigured,
+  updateGlobalAdminPassword,
+  updateAdminPasswordOnCloud,
+  getGlobalSettings,
+} from '../services/firebase';
 import { getActiveFirebaseConfig } from '../config/firebase';
 
 interface AdminSettingsModalProps {
@@ -48,6 +57,11 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
     return config.customApiKey || '';
   });
   const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [showAdminPassword, setShowAdminPassword] = useState(false);
+  const [currentAdminPassword, setCurrentAdminPassword] = useState('123456');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   const [firebaseApiKey, setFirebaseApiKey] = useState(() => {
     const active = getActiveFirebaseConfig();
     return active.apiKey || '';
@@ -59,11 +73,32 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setNewAdminPassword('');
+      setShowAdminPassword(false);
+      setSaveError(null);
+      setIsSaving(false);
+
       const active = getActiveFirebaseConfig();
       if (active.apiKey) setFirebaseApiKey(active.apiKey);
       if (active.projectId) setFirebaseProjectId(active.projectId);
+
+      // Nạp mật khẩu hiện tại từ Cloud/LocalStorage để hiển thị
+      const cached =
+        localStorage.getItem('admin_password') ||
+        localStorage.getItem('tro_ly_phap_ly_custom_admin_password') ||
+        config.customAdminPassword ||
+        '123456';
+      setCurrentAdminPassword(cached);
+
+      getGlobalSettings()
+        .then((doc) => {
+          if (doc?.adminPassword) {
+            setCurrentAdminPassword(doc.adminPassword);
+          }
+        })
+        .catch(() => {});
     }
-  }, [isOpen]);
+  }, [isOpen, config.customAdminPassword]);
 
   const [testStatus, setTestStatus] = useState<{ loading: boolean; success?: boolean; message?: string } | null>(
     null
@@ -74,50 +109,60 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSaving(true);
+    setSaveError(null);
 
     const cleanApiKey = apiKey.trim();
     const cleanNewPassword = newAdminPassword.trim();
 
-    // Cập nhật Mật khẩu Admin mới trực tiếp lên Firebase Firestore (settings/global_config)
-    if (cleanNewPassword) {
-      await updateGlobalAdminPassword(cleanNewPassword);
-    }
-
-    // 1. Mandatory requirement: Persist API Key in localStorage with key 'GEMINI_API_KEY'
     try {
-      if (cleanApiKey) {
-        localStorage.setItem('GEMINI_API_KEY', cleanApiKey);
-      } else {
-        localStorage.removeItem('GEMINI_API_KEY');
+      // 1. Cập nhật Mật khẩu Admin mới lên Firebase Firestore (settings/global_config) & LocalStorage
+      if (cleanNewPassword) {
+        await updateAdminPasswordOnCloud(cleanNewPassword);
+        setCurrentAdminPassword(cleanNewPassword);
       }
-    } catch (err) {
-      console.error('Failed to write GEMINI_API_KEY to localStorage:', err);
+
+      // 2. Persist API Key in localStorage with key 'GEMINI_API_KEY'
+      try {
+        if (cleanApiKey) {
+          localStorage.setItem('GEMINI_API_KEY', cleanApiKey);
+        } else {
+          localStorage.removeItem('GEMINI_API_KEY');
+        }
+      } catch (err) {
+        console.error('Failed to write GEMINI_API_KEY to localStorage:', err);
+      }
+
+      const updated: AppConfig = {
+        ...config,
+        model,
+        temperature,
+        maxOutputTokens: maxTokens,
+        customApiKey: cleanApiKey || undefined,
+        customAdminPassword: cleanNewPassword || config.customAdminPassword || currentAdminPassword,
+      };
+
+      onUpdateConfig(updated);
+
+      if (firebaseApiKey && firebaseProjectId) {
+        saveCustomFirebaseConfig({
+          apiKey: firebaseApiKey.trim(),
+          projectId: firebaseProjectId.trim(),
+          authDomain: `${firebaseProjectId.trim()}.firebaseapp.com`,
+        });
+      }
+
+      setSaveToast(true);
+      setTimeout(() => {
+        setSaveToast(false);
+        onClose();
+      }, 1000);
+    } catch (err: any) {
+      console.error('Lỗi khi lưu cấu hình:', err);
+      setSaveError(err?.message || 'Không thể lưu mật khẩu hoặc cài đặt lên Cloud. Vui lòng kiểm tra kết nối mạng!');
+    } finally {
+      setIsSaving(false);
     }
-
-    const updated: AppConfig = {
-      ...config,
-      model,
-      temperature,
-      maxOutputTokens: maxTokens,
-      customApiKey: cleanApiKey || undefined,
-      customAdminPassword: cleanNewPassword || config.customAdminPassword,
-    };
-
-    onUpdateConfig(updated);
-
-    if (firebaseApiKey && firebaseProjectId) {
-      saveCustomFirebaseConfig({
-        apiKey: firebaseApiKey.trim(),
-        projectId: firebaseProjectId.trim(),
-        authDomain: `${firebaseProjectId.trim()}.firebaseapp.com`,
-      });
-    }
-
-    setSaveToast(true);
-    setTimeout(() => {
-      setSaveToast(false);
-      onClose();
-    }, 900);
   };
 
   const handleTestApiKey = async () => {
@@ -354,29 +399,54 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
             </div>
 
             {/* Change Admin Password */}
-            <div>
-              <label className="block text-xs text-slate-400 mb-1.5">
-                Đổi mật khẩu Admin (Để trống nếu giữ nguyên):
-              </label>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs text-slate-400">
+                  Đổi mật khẩu Admin mới (Để trống nếu giữ nguyên):
+                </label>
+                {currentAdminPassword && (
+                  <span className="text-[11px] text-amber-400 font-mono">
+                    Hiện tại: {currentAdminPassword}
+                  </span>
+                )}
+              </div>
               <div className="relative">
                 <input
-                  type="password"
+                  type={showAdminPassword ? 'text' : 'password'}
                   value={newAdminPassword}
                   onChange={(e) => setNewAdminPassword(e.target.value)}
-                  placeholder="Nhập mật khẩu Admin mới..."
-                  className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 pl-9 text-xs text-white placeholder-slate-600 focus:border-amber-500 focus:outline-none"
+                  placeholder="Nhập mật khẩu Admin mới để đổi..."
+                  className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 pl-9 pr-10 text-xs text-white placeholder-slate-600 focus:border-amber-500 focus:outline-none"
                 />
                 <Lock className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+                <button
+                  type="button"
+                  onClick={() => setShowAdminPassword(!showAdminPassword)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 transition"
+                  title={showAdminPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                >
+                  {showAdminPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
               </div>
+              <p className="text-[11px] text-slate-500">
+                🔒 Khi bấm "Lưu Thay Đổi", mật khẩu mới sẽ được lưu trực tiếp vào Firestore <code className="text-amber-400 font-mono">settings/global_config</code> và đồng bộ bộ nhớ LocalStorage.
+              </p>
             </div>
           </div>
+
+          {saveError && (
+            <div className="mx-6 mb-2 flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+              <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
+              <span>{saveError}</span>
+            </div>
+          )}
 
           {/* Modal Actions */}
           <div className="sticky bottom-0 flex items-center justify-between border-t border-slate-200 bg-white/95 pt-4 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/90">
             {saveToast ? (
               <span className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
                 <CheckCircle2 className="h-4 w-4" />
-                Đã lưu cấu hình thành công!
+                Đã lưu cấu hình và Mật khẩu thành công lên Cloud!
               </span>
             ) : (
               <span className="text-xs text-slate-500 dark:text-slate-400">Các thay đổi sẽ được áp dụng ngay lập tức</span>
@@ -386,15 +456,24 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-xl px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white transition"
+                disabled={isSaving}
+                className="rounded-xl px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white transition disabled:opacity-50"
               >
                 Đóng
               </button>
               <button
                 type="submit"
-                className="rounded-xl bg-amber-500 px-5 py-2 text-xs font-semibold text-slate-950 shadow-md shadow-amber-500/20 hover:bg-amber-400 active:scale-95 transition"
+                disabled={isSaving}
+                className="flex items-center gap-2 rounded-xl bg-amber-500 px-5 py-2 text-xs font-semibold text-slate-950 shadow-md shadow-amber-500/20 hover:bg-amber-400 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
-                Lưu Thay Đổi
+                {isSaving ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Đang lưu lên Cloud...</span>
+                  </>
+                ) : (
+                  <span>Lưu Thay Đổi</span>
+                )}
               </button>
             </div>
           </div>

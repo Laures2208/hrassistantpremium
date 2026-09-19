@@ -1,6 +1,7 @@
 import {
   getGlobalSettings,
   updateGlobalSettings,
+  updateAdminPasswordOnCloud,
   getDocuments,
   addDocument,
   deleteDocument,
@@ -17,6 +18,7 @@ import { DocumentItem } from '../types';
 export {
   getGlobalSettings,
   updateGlobalSettings,
+  updateAdminPasswordOnCloud,
   getDocuments,
   addDocument,
   deleteDocument,
@@ -44,15 +46,18 @@ export async function verifyAdminPassword(inputPassword: string): Promise<boolea
     return true;
   }
 
+  // 2. Kiểm tra mật khẩu mới nhất từ Firestore settings/global_config
   try {
     const settings = await getGlobalSettings();
-    const remotePassword = (settings?.adminPassword || DEFAULT_ADMIN_PASSWORD).trim();
-    if (cleanInput === remotePassword) return true;
+    const remotePassword = (settings?.adminPassword || '').trim();
+    if (remotePassword && cleanInput === remotePassword) return true;
   } catch (err) {
     console.warn('[Auth] Lỗi xác thực với Cloud, dùng bộ nhớ dự phòng:', err);
   }
 
+  // 3. Kiểm tra các khóa bộ nhớ LocalStorage
   const cached =
+    localStorage.getItem("admin_password") ||
     localStorage.getItem(LOCAL_STORAGE_ADMIN_PW_KEY) ||
     import.meta.env.VITE_ADMIN_PASSWORD ||
     DEFAULT_ADMIN_PASSWORD;
