@@ -1,4 +1,6 @@
 import {
+  getGlobalConfig,
+  updateGlobalConfig,
   getGlobalSettings,
   updateGlobalSettings,
   updateAdminPasswordOnCloud,
@@ -16,6 +18,8 @@ import { reinitFirebase, FirebaseConfigOptions, isFirebaseConfigured } from '../
 import { DocumentItem } from '../types';
 
 export {
+  getGlobalConfig,
+  updateGlobalConfig,
   getGlobalSettings,
   updateGlobalSettings,
   updateAdminPasswordOnCloud,

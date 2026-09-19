@@ -21,7 +21,9 @@ export const LOCAL_STORAGE_DOCS_KEY = 'SAVED_DOCUMENTS';
 export const LOCAL_STORAGE_ADMIN_PW_KEY = 'tro_ly_phap_ly_custom_admin_password';
 
 export interface GlobalConfigDoc {
-  adminPassword: string;
+  adminPassword?: string;
+  geminiApiKey?: string;
+  updatedAt?: string;
   updated_at?: string;
   [key: string]: any;
 }
@@ -40,16 +42,16 @@ export function checkFirebaseConfigured(): boolean {
 }
 
 // =========================================================================
-// 1. QUẢN LÝ CÀI ĐẶT & MẬT KHẨU ADMIN (SETTINGS / GLOBAL_CONFIG)
+// 1. QUẢN LÝ CÀI ĐẶT, MẬT KHẨU ADMIN & GEMINI API KEY (SETTINGS / GLOBAL_CONFIG)
 // =========================================================================
 
 /**
- * getGlobalSettings: Lấy Mật khẩu Admin và cấu hình chung từ Firestore Cloud
- * - Đọc document settings/global_config từ Firestore về.
- * - Lấy adminPassword trên Firestore.
- * - (Fallback): Nếu Firestore chưa có document này, tự động tạo mới với giá trị mặc định ('123456').
+ * getGlobalConfig: Tải Cấu hình chung và Gemini API Key từ Firestore Cloud
+ * - Tải document settings/global_config từ Firestore.
+ * - Trả về cả adminPassword và geminiApiKey.
+ * - Lưu dự phòng vào LocalStorage để ứng dụng đọc nhanh.
  */
-export async function getGlobalSettings(): Promise<GlobalConfigDoc> {
+export async function getGlobalConfig(): Promise<GlobalConfigDoc> {
   const activeDb = getDb();
 
   if (activeDb) {
@@ -59,26 +61,42 @@ export async function getGlobalSettings(): Promise<GlobalConfigDoc> {
 
       if (snapshot.exists()) {
         const data = snapshot.data() as GlobalConfigDoc;
-        const password = data.adminPassword || DEFAULT_ADMIN_PASSWORD;
-        console.log('[Firestore] Đã nạp settings/global_config từ Cloud:', data);
+        const password = (data.adminPassword || DEFAULT_ADMIN_PASSWORD).trim();
+        const apiKey = (data.geminiApiKey || '').trim();
+
+        console.log('[Firestore] ✅ Đã nạp settings/global_config từ Cloud:', {
+          hasPassword: !!password,
+          hasApiKey: !!apiKey,
+        });
+
+        // Lưu dự phòng vào LocalStorage để ứng dụng đọc nhanh
         try {
           localStorage.setItem(LOCAL_STORAGE_ADMIN_PW_KEY, password);
+          localStorage.setItem('admin_password', password);
+          if (apiKey) {
+            localStorage.setItem('GEMINI_API_KEY', apiKey);
+          }
         } catch (_) {}
+
         return {
           ...data,
           adminPassword: password,
-          updated_at: data.updated_at || new Date().toISOString(),
+          geminiApiKey: apiKey,
+          updated_at: data.updated_at || data.updatedAt || new Date().toISOString(),
         };
       } else {
         // Document chưa tồn tại -> Tự động khởi tạo lên Firestore với mật khẩu mặc định '123456'
         console.log('[Firestore] settings/global_config chưa tồn tại. Đang tự động tạo mới document...');
         const initialConfig: GlobalConfigDoc = {
           adminPassword: DEFAULT_ADMIN_PASSWORD,
+          geminiApiKey: '',
+          updatedAt: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         };
-        await setDoc(configRef, initialConfig);
+        await setDoc(configRef, initialConfig, { merge: true });
         try {
           localStorage.setItem(LOCAL_STORAGE_ADMIN_PW_KEY, DEFAULT_ADMIN_PASSWORD);
+          localStorage.setItem('admin_password', DEFAULT_ADMIN_PASSWORD);
         } catch (_) {}
         return initialConfig;
       }
@@ -92,112 +110,141 @@ export async function getGlobalSettings(): Promise<GlobalConfigDoc> {
     const res = await fetch('/api/settings');
     if (res.ok) {
       const serverSettings = await res.json();
-      if (serverSettings?.adminPassword) {
+      if (serverSettings) {
+        const pwd = (serverSettings.adminPassword || DEFAULT_ADMIN_PASSWORD).trim();
+        const key = (serverSettings.geminiApiKey || '').trim();
+        try {
+          localStorage.setItem(LOCAL_STORAGE_ADMIN_PW_KEY, pwd);
+          localStorage.setItem('admin_password', pwd);
+          if (key) localStorage.setItem('GEMINI_API_KEY', key);
+        } catch (_) {}
         return {
-          adminPassword: serverSettings.adminPassword,
-          updated_at: serverSettings.updated_at,
+          adminPassword: pwd,
+          geminiApiKey: key,
+          updated_at: serverSettings.updated_at || serverSettings.updatedAt || new Date().toISOString(),
         };
       }
     }
   } catch (_) {}
 
-  // Nguồn dự phòng 2: LocalStorage / Mặc định 123456
+  // Nguồn dự phòng 2: LocalStorage / Biến môi trường
   const cachedPw =
+    localStorage.getItem('admin_password') ||
     localStorage.getItem(LOCAL_STORAGE_ADMIN_PW_KEY) ||
-    import.meta.env.VITE_ADMIN_PASSWORD ||
+    (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_ADMIN_PASSWORD : '') ||
     DEFAULT_ADMIN_PASSWORD;
 
+  const cachedKey =
+    localStorage.getItem('GEMINI_API_KEY') ||
+    (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_GEMINI_API_KEY : '') ||
+    '';
+
   return {
-    adminPassword: cachedPw,
+    adminPassword: cachedPw.trim(),
+    geminiApiKey: cachedKey.trim(),
     updated_at: new Date().toISOString(),
   };
 }
+
+/**
+ * Tương thích ngược: getGlobalSettings
+ */
+export const getGlobalSettings = getGlobalConfig;
+
+export interface UpdateGlobalConfigParams {
+  adminPassword?: string;
+  geminiApiKey?: string;
+  [key: string]: any;
+}
+
+/**
+ * updateGlobalConfig: Cập nhật Mật khẩu Admin và Gemini API Key lên Firestore Cloud
+ * - Nhận vào { adminPassword?, geminiApiKey? }.
+ * - Sử dụng setDoc(docRef, data, { merge: true }) để lưu đồng thời lên Firestore Cloud.
+ * - Lưu dự phòng vào LocalStorage và Server API.
+ */
+export async function updateGlobalConfig(params: UpdateGlobalConfigParams): Promise<boolean> {
+  const activeDb = getDb();
+  const timestamp = new Date().toISOString();
+
+  const updateData: Record<string, any> = {
+    updatedAt: timestamp,
+    updated_at: timestamp,
+  };
+
+  if (params.adminPassword !== undefined) {
+    const cleanPw = params.adminPassword.trim();
+    if (cleanPw) {
+      updateData.adminPassword = cleanPw;
+      try {
+        localStorage.setItem('admin_password', cleanPw);
+        localStorage.setItem(LOCAL_STORAGE_ADMIN_PW_KEY, cleanPw);
+      } catch (_) {}
+    }
+  }
+
+  if (params.geminiApiKey !== undefined) {
+    const cleanKey = params.geminiApiKey.trim();
+    updateData.geminiApiKey = cleanKey;
+    try {
+      if (cleanKey) {
+        localStorage.setItem('GEMINI_API_KEY', cleanKey);
+      } else {
+        localStorage.removeItem('GEMINI_API_KEY');
+      }
+    } catch (_) {}
+  }
+
+  // Sao chép các trường mở rộng nếu có
+  for (const key of Object.keys(params)) {
+    if (key !== 'adminPassword' && key !== 'geminiApiKey') {
+      updateData[key] = params[key];
+    }
+  }
+
+  let savedSuccessfully = false;
+
+  // 1. Lưu lên Firestore với { merge: true }
+  if (activeDb) {
+    try {
+      const settingsRef = doc(activeDb, FIRESTORE_SETTINGS_COLLECTION, FIRESTORE_SETTINGS_DOC);
+      await setDoc(settingsRef, updateData, { merge: true });
+      console.log('✅ Đã cập nhật Cấu hình & API Key thành công lên Firebase Firestore Cloud!');
+      savedSuccessfully = true;
+    } catch (error) {
+      console.error('❌ Lỗi khi lưu Cấu hình lên Firebase:', error);
+      throw error;
+    }
+  } else {
+    console.warn('⚠️ Firebase chưa kết nối trực tiếp, đồng bộ qua LocalStorage và Server');
+  }
+
+  // 2. Đồng bộ dự phòng lên server API
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updateData),
+    });
+    savedSuccessfully = true;
+  } catch (srvErr) {
+    console.warn('Lỗi đồng bộ server API settings:', srvErr);
+  }
+
+  return savedSuccessfully;
+}
+
+/**
+ * Tương thích ngược: updateGlobalSettings
+ */
+export const updateGlobalSettings = updateGlobalConfig;
 
 /**
  * updateAdminPasswordOnCloud: Lưu Mật khẩu Admin mới lên Firebase Firestore và LocalStorage
  */
 export const updateAdminPasswordOnCloud = async (newPassword: string): Promise<boolean> => {
-  const cleanPassword = (newPassword || '').trim();
-  if (!cleanPassword) {
-    throw new Error('Mật khẩu Admin không được để trống');
-  }
-
-  const activeDb = getDb();
-  const timestamp = new Date().toISOString();
-
-  // 1. Lưu dự phòng vào LocalStorage ngay lập tức
-  try {
-    localStorage.setItem("admin_password", cleanPassword);
-    localStorage.setItem(LOCAL_STORAGE_ADMIN_PW_KEY, cleanPassword);
-  } catch (lsErr) {
-    console.warn("Lỗi lưu LocalStorage:", lsErr);
-  }
-
-  // 2. Lưu lên Firestore với { merge: true }
-  if (activeDb) {
-    try {
-      const settingsRef = doc(activeDb, "settings", "global_config");
-      await setDoc(
-        settingsRef,
-        {
-          adminPassword: cleanPassword,
-          updatedAt: timestamp,
-          updated_at: timestamp,
-        },
-        { merge: true }
-      );
-      console.log("✅ Đã cập nhật Mật khẩu Admin thành công lên Firebase!");
-    } catch (error) {
-      console.error("❌ Lỗi khi lưu Mật khẩu Admin lên Firebase:", error);
-      throw error;
-    }
-  } else {
-    console.warn("⚠️ Firebase chưa kết nối, đã lưu mật khẩu vào LocalStorage");
-  }
-
-  // 3. Đồng bộ dự phòng lên server API
-  try {
-    fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminPassword: cleanPassword, updated_at: timestamp }),
-    }).catch(() => {});
-  } catch (_) {}
-
-  return true;
+  return updateGlobalConfig({ adminPassword: newPassword });
 };
-
-/**
- * updateGlobalSettings: Cập nhật Mật khẩu Admin mới và Cài đặt lên Cloud
- */
-export async function updateGlobalSettings(settingsData: Partial<GlobalConfigDoc>): Promise<boolean> {
-  const cleanPassword = (settingsData.adminPassword || '').trim();
-  if (cleanPassword) {
-    return updateAdminPasswordOnCloud(cleanPassword);
-  }
-
-  const activeDb = getDb();
-  const payload: GlobalConfigDoc = {
-    adminPassword: DEFAULT_ADMIN_PASSWORD,
-    updated_at: new Date().toISOString(),
-    ...settingsData,
-  };
-
-  let savedToFirestore = false;
-
-  if (activeDb) {
-    try {
-      const configRef = doc(activeDb, FIRESTORE_SETTINGS_COLLECTION, FIRESTORE_SETTINGS_DOC);
-      await setDoc(configRef, payload, { merge: true });
-      console.log('[Firestore] Đã cập nhật settings/global_config lên Cloud thành công!');
-      savedToFirestore = true;
-    } catch (err) {
-      console.error('[Firestore] Lỗi ghi settings/global_config lên Firestore:', err);
-    }
-  }
-
-  return savedToFirestore;
-}
 
 // =========================================================================
 // 2. QUẢN LÝ TÀI LIỆU (COLLECTION "DOCUMENTS")

@@ -7,7 +7,7 @@ import { WelcomeScreen } from './components/LegalDisclaimer';
 import { AdminAuthModal } from './components/AdminAuthModal';
 import { AdminFileManagerModal } from './components/AdminFileManagerModal';
 import { AdminMemoryModal } from './components/AdminMemoryModal';
-import { AdminSettingsModal } from './components/AdminSettingsModal';
+import { SettingsModal, AdminSettingsModal } from './components/SettingsModal';
 import {
   ChatMessage,
   DocumentItem,
@@ -17,7 +17,7 @@ import {
   ThemeMode,
 } from './types';
 import { isFirebaseConfigured } from './config/firebase';
-import { getGlobalSettings, getDocuments } from './services/firestoreService';
+import { getGlobalConfig, getDocuments } from './services/firestoreService';
 import { getDailyQuota, incrementDailyQuota } from './services/quota';
 import { streamGeminiResponse, DEFAULT_MODEL } from './services/gemini';
 
@@ -114,15 +114,41 @@ export default function App() {
       try {
         console.log('[App] Bắt đầu initAppData: Đồng bộ dữ liệu cloud từ Firebase Firestore...');
 
-        // 1. Nạp settings/global_config từ Firestore ➔ Cập nhật Mật khẩu Admin mới nhất
-        const cloudSettings = await getGlobalSettings();
-        if (cloudSettings?.adminPassword) {
-          console.log('[App] Đã đồng bộ Mật khẩu Admin từ Firestore Cloud');
-          setConfig((prev) => ({
-            ...prev,
-            customAdminPassword: cloudSettings.adminPassword,
-          }));
+        // 1. Tự động nạp settings/global_config từ Firestore Cloud (Mật khẩu & Gemini API Key)
+        const cloudConfig = await getGlobalConfig();
+
+        // 2. Thứ tự ưu tiên lấy API Key:
+        // API Key từ Firestore Cloud ➔ Biến môi trường VITE_GEMINI_API_KEY ➔ LocalStorage
+        let resolvedApiKey = '';
+        if (cloudConfig?.geminiApiKey && cloudConfig.geminiApiKey.trim()) {
+          resolvedApiKey = cloudConfig.geminiApiKey.trim();
+          console.log('[App] ✅ Đã nạp Gemini API Key dùng chung từ Firestore Cloud cho thiết bị này!');
+        } else if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
+          resolvedApiKey = import.meta.env.VITE_GEMINI_API_KEY.trim();
+          console.log('[App] Sử dụng Gemini API Key từ biến môi trường VITE_GEMINI_API_KEY');
+        } else {
+          try {
+            const localKey = localStorage.getItem('GEMINI_API_KEY');
+            if (localKey && localKey.trim()) {
+              resolvedApiKey = localKey.trim();
+              console.log('[App] Sử dụng Gemini API Key từ bộ nhớ LocalStorage');
+            }
+          } catch (_) {}
         }
+
+        // Lưu đồng bộ vào LocalStorage để các thư viện client có thể đọc ngay tức thì
+        if (resolvedApiKey) {
+          try {
+            localStorage.setItem('GEMINI_API_KEY', resolvedApiKey);
+          } catch (_) {}
+        }
+
+        // Cập nhật State cấu hình AI với API Key và Mật khẩu mới nhất
+        setConfig((prev) => ({
+          ...prev,
+          customApiKey: resolvedApiKey || prev.customApiKey,
+          customAdminPassword: cloudConfig?.adminPassword || prev.customAdminPassword,
+        }));
 
         // 2. Nạp list file từ collection "documents" trên Firestore ➔ Cập nhật bộ tri thức cho AI
         const result = await getDocuments();

@@ -18,11 +18,23 @@ CÁC QUY TẮC BẮT BUỘC TUÂN THỦ:
 
 /**
  * Resolves the active Gemini API Key following strict priority:
- * 1. localStorage ('GEMINI_API_KEY')
- * 2. Custom API key passed in AppConfig
- * 3. Environment variable VITE_GEMINI_API_KEY
+ * 1. API Key từ Firestore Cloud (customApiKey từ State/Config)
+ * 2. Biến môi trường VITE_GEMINI_API_KEY
+ * 3. LocalStorage ('GEMINI_API_KEY')
  */
 export function getStoredApiKey(customApiKey?: string): string {
+  // 1. Ưu tiên số 1: API Key từ Firestore Cloud (được nạp vào State/Config)
+  if (customApiKey && customApiKey.trim()) {
+    return customApiKey.trim();
+  }
+
+  // 2. Ưu tiên số 2: Biến môi trường VITE_GEMINI_API_KEY
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
+    const envKey = import.meta.env.VITE_GEMINI_API_KEY.trim();
+    if (envKey) return envKey;
+  }
+
+  // 3. Ưu tiên số 3: LocalStorage
   try {
     const fromStorage = localStorage.getItem('GEMINI_API_KEY');
     if (fromStorage && fromStorage.trim()) {
@@ -30,14 +42,6 @@ export function getStoredApiKey(customApiKey?: string): string {
     }
   } catch (e) {
     console.warn('Cannot read GEMINI_API_KEY from localStorage:', e);
-  }
-
-  if (customApiKey && customApiKey.trim()) {
-    return customApiKey.trim();
-  }
-
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
-    return import.meta.env.VITE_GEMINI_API_KEY.trim();
   }
 
   return '';

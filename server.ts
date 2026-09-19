@@ -24,7 +24,18 @@ const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
 // Lazy load Gemini AI instance
 function getGeminiClient(customKey?: string): GoogleGenAI {
-  const apiKey = customKey || process.env.GEMINI_API_KEY;
+  let apiKey = customKey || process.env.GEMINI_API_KEY;
+
+  if (!apiKey && fs.existsSync(SETTINGS_FILE)) {
+    try {
+      const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+      const saved = JSON.parse(raw);
+      if (saved?.geminiApiKey && typeof saved.geminiApiKey === 'string' && saved.geminiApiKey.trim()) {
+        apiKey = saved.geminiApiKey.trim();
+      }
+    } catch (_) {}
+  }
+
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY environment variable is missing.');
   }
