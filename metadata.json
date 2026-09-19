@@ -1,0 +1,6 @@
+{
+  "name": "Trợ Lý Pháp Lý Lao Động",
+  "description": "Trợ lý AI tư vấn và tra cứu Pháp luật Lao động Việt Nam, Bộ luật Lao động 2019, hợp đồng, chế độ thai sản, tiền lương, BHXH và giải quyết tranh chấp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
