@@ -1,6 +1,4 @@
-import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import {
-  getFirestore,
   collection,
   getDocs,
   doc,
@@ -10,91 +8,83 @@ import {
   query,
   orderBy,
 } from 'firebase/firestore';
+import { db, getFirestoreInstance, getActiveFirebaseConfig, reinitFirebase, FirebaseConfigOptions } from '../config/firebase';
 import { DocumentItem } from '../types';
 import { SAMPLE_LABOR_LAWS } from '../data/sampleLaborLaws';
 
-const FIRESTORE_DOCS_COLLECTION = 'documents';
+export const FIRESTORE_DOCS_COLLECTION = 'documents';
 export const LOCAL_STORAGE_DOCS_KEY = 'SAVED_DOCUMENTS';
 
-// Check for config from environment variables or custom config
-function getFirebaseConfig() {
-  const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
-  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-
-  if (apiKey && projectId) {
-    return {
-      apiKey: apiKey,
-      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || `${projectId}.firebaseapp.com`,
-      projectId: projectId,
-      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || `${projectId}.appspot.com`,
-      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
-      appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
-    };
-  }
-
-  // Check if there's custom saved config in localStorage
-  try {
-    const saved = localStorage.getItem('tro_ly_phap_ly_custom_firebase_config');
-    if (saved) {
-      return JSON.parse(saved);
-    }
-  } catch (e) {
-    console.error('Error parsing custom firebase config:', e);
-  }
-
-  return null;
-}
-
-let firebaseAppInstance: FirebaseApp | null = null;
-let firestoreInstance: Firestore | null = null;
-
 export function getFirestoreDb(): Firestore | null {
-  if (firestoreInstance) return firestoreInstance;
-
-  try {
-    const config = getFirebaseConfig();
-    if (config && config.projectId && config.apiKey) {
-      if (!getApps().length) {
-        firebaseAppInstance = initializeApp(config);
-      } else {
-        firebaseAppInstance = getApp();
-      }
-      firestoreInstance = getFirestore(firebaseAppInstance);
-      return firestoreInstance;
-    }
-  } catch (err) {
-    console.warn('Firebase initialization skipped or failed:', err);
-  }
-  return null;
+  return db || getFirestoreInstance();
 }
 
 export function isFirebaseConfigured(): boolean {
-  return getFirebaseConfig() !== null;
+  const cfg = getActiveFirebaseConfig();
+  return !!(cfg && cfg.apiKey && cfg.projectId);
 }
 
 /**
- * Load documents once on app boot.
- * 1. Checks Firebase Firestore if configured.
- * 2. If Firestore has docs, caches to localStorage (SAVED_DOCUMENTS) and returns them.
- * 3. If Firestore fails or is empty, reads from localStorage (SAVED_DOCUMENTS).
- * 4. CRITICAL RULE: If ANY user documents exist (Firestore or localStorage),
- *    ALL sample data is completely omitted/hidden. Only use 100% user documents!
- * 5. If 0 user documents exist, falls back to SAMPLE_LABOR_LAWS.
+ * Thử đồng bộ cấu hình Firebase từ máy chủ nếu máy hiện tại chưa có cấu hình trong env hay localStorage
+ */
+export async function syncFirebaseConfigFromServer(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/firebase-config');
+    if (res.ok) {
+      const serverConfig = await res.json();
+      if (serverConfig?.apiKey && serverConfig?.projectId) {
+        localStorage.setItem('tro_ly_phap_ly_custom_firebase_config', JSON.stringify(serverConfig));
+        reinitFirebase(serverConfig);
+        console.log('[Firebase] Đã đồng bộ cấu hình Firebase từ máy chủ thành công!');
+        return true;
+      }
+    }
+  } catch (err) {
+    // Server có thể offline hoặc không có cấu hình lưu trữ
+  }
+  return false;
+}
+
+/**
+ * Global Document Fetching (Single Source of Truth: Firebase Firestore).
+ * Dù mở ở bất kỳ máy nào, ứng dụng sẽ thực hiện getDocs từ collection "documents".
+ *
+ * 1. Kiểm tra & kết nối Firebase Firestore.
+ * 2. Thực hiện hàm getDocs(collection(db, "documents")) để lấy danh sách tài liệu thực tế từ Firestore.
+ * 3. Quy tắc đè dữ liệu mẫu:
+ *    - NẾU Firestore có ít nhất 1 file -> XÓA HOÀN TOÀN dữ liệu mẫu (Sample data).
+ *    - Trả về 100% tài liệu từ Firestore.
+ *    - Đồng bộ cache offline trong localStorage (SAVED_DOCUMENTS).
+ * 4. NẾU Firestore chưa kết nối được (hoặc offline):
+ *    - Thử lấy dữ liệu sao lưu từ máy chủ (/api/documents).
+ *    - Thử đọc cache offline từ localStorage (SAVED_DOCUMENTS).
+ * 5. NẾU 0 có tài liệu người dùng ở mọi nguồn -> Mới fallback sang SAMPLE_LABOR_LAWS.
  */
 export async function fetchInitialDocuments(): Promise<{
   documents: DocumentItem[];
   source: 'firestore' | 'sample' | 'local';
 }> {
-  const db = getFirestoreDb();
+  // Nếu chưa có kết nối db, thử tải cấu hình từ server
+  if (!getFirestoreDb()) {
+    await syncFirebaseConfigFromServer();
+  }
 
-  if (db) {
+  const activeDb = getFirestoreDb();
+
+  // 1. SINGLE SOURCE OF TRUTH: Firebase Firestore
+  if (activeDb) {
     try {
-      const docsRef = collection(db, FIRESTORE_DOCS_COLLECTION);
-      const q = query(docsRef, orderBy('uploadedAt', 'desc'));
-      const snapshot = await getDocs(q).catch(async () => {
-        // Fallback without orderBy in case index is not built yet
-        return await getDocs(docsRef);
-      });
+      console.log('[Firestore] Đang thực hiện getDocs từ collection "documents" trên Firebase Firestore...');
+      const docsRef = collection(activeDb, FIRESTORE_DOCS_COLLECTION);
+      
+      let snapshot;
+      try {
+        const q = query(docsRef, orderBy('uploadedAt', 'desc'));
+        snapshot = await getDocs(q);
+      } catch (orderErr) {
+        // Fallback truy vấn trực tiếp không dùng orderBy nếu chưa build index
+        snapshot = await getDocs(docsRef);
+      }
 
       if (!snapshot.empty) {
         const firestoreDocs: DocumentItem[] = [];
@@ -104,7 +94,7 @@ export async function fetchInitialDocuments(): Promise<{
             id: docSnap.id,
             name: data.name || 'Tài liệu không tên',
             fileType: data.fileType || 'txt',
-            size: data.size || 0,
+            size: Number(data.size) || 0,
             uploadedAt: data.uploadedAt || new Date().toISOString(),
             textContent: data.textContent || '',
             category: data.category || 'law',
@@ -114,49 +104,77 @@ export async function fetchInitialDocuments(): Promise<{
         });
 
         if (firestoreDocs.length > 0) {
-          // Sync backup copy to localStorage under 'SAVED_DOCUMENTS'
+          console.log(`[Firestore] Đã tải thành công ${firestoreDocs.length} tài liệu từ Firestore. XÓA BỎ HOÀN TOÀN dữ liệu mẫu.`);
+          
+          // Lưu cache offline vào localStorage (chỉ làm cache, không phụ thuộc)
           try {
             localStorage.setItem(LOCAL_STORAGE_DOCS_KEY, JSON.stringify(firestoreDocs));
           } catch (storageErr) {
-            console.warn('Local storage cache limit:', storageErr);
+            console.warn('[Firestore] Cảnh báo dung lượng localStorage:', storageErr);
           }
 
-          // User documents exist in Firestore -> Hide all sample data
+          // Đồng bộ sao lưu lên server
+          syncDocsToServerBackup(firestoreDocs);
+
           return { documents: firestoreDocs, source: 'firestore' };
         }
+      } else {
+        console.log('[Firestore] Collection "documents" trên Firestore hiện đang rỗng.');
       }
     } catch (err) {
-      console.warn('Error fetching documents from Firestore, checking localStorage backup:', err);
+      console.warn('[Firestore] Lỗi kết nối Firestore, đang kiểm tra nguồn dự phòng:', err);
     }
+  } else {
+    console.info('[Firestore] Chưa tìm thấy kết nối Firestore trực tiếp.');
   }
 
-  // 2. Read from localStorage (key: SAVED_DOCUMENTS)
+  // 2. Server Shared Persistence Fallback (Đồng bộ giữa các máy thông qua server)
+  try {
+    const serverRes = await fetch('/api/documents');
+    if (serverRes.ok) {
+      const serverDocs = await serverRes.json();
+      if (Array.isArray(serverDocs) && serverDocs.length > 0) {
+        console.log(`[Server Shared] Đã tải ${serverDocs.length} tài liệu đồng bộ từ máy chủ.`);
+        try {
+          localStorage.setItem(LOCAL_STORAGE_DOCS_KEY, JSON.stringify(serverDocs));
+        } catch (_) {}
+        return { documents: serverDocs, source: 'firestore' };
+      }
+    }
+  } catch (serverErr) {
+    // Bỏ qua nếu server API không phản hồi
+  }
+
+  // 3. Offline Cache Fallback (localStorage key: SAVED_DOCUMENTS)
   try {
     const cached = localStorage.getItem(LOCAL_STORAGE_DOCS_KEY);
     if (cached) {
       const parsed: DocumentItem[] = JSON.parse(cached);
-      // Filter out any legacy sample data if present to ensure only user docs remain
       const userDocs = parsed.filter((d) => d.source !== 'sample');
       if (userDocs.length > 0) {
+        console.log(`[Cache Offline] Đã tải ${userDocs.length} tài liệu từ bộ nhớ tạm máy tính.`);
         return { documents: userDocs, source: 'local' };
       }
     }
   } catch (e) {
-    console.warn('Could not read cached docs from localStorage:', e);
+    console.warn('[Cache Offline] Không thể đọc cache:', e);
   }
 
-  // 3. If zero user documents exist anywhere, default to sample labor laws
+  // 4. Nếu hoàn toàn không có tài liệu người dùng nào ở mọi nguồn, dùng dữ liệu mẫu
+  console.log('[System] Chưa có tài liệu thực tế nào, hiển thị dữ liệu mẫu pháp lý.');
   return { documents: SAMPLE_LABOR_LAWS, source: 'sample' };
 }
 
 /**
- * Save or update document to Firebase Firestore (and local storage backup)
+ * Lưu hoặc cập nhật tài liệu lên Firebase Firestore
  */
 export async function saveDocumentToFirestore(document: DocumentItem): Promise<boolean> {
-  const db = getFirestoreDb();
-  if (db) {
+  let savedToFirestore = false;
+  const activeDb = getFirestoreDb();
+
+  if (activeDb) {
     try {
-      const docRef = doc(db, FIRESTORE_DOCS_COLLECTION, document.id);
+      const docRef = doc(activeDb, FIRESTORE_DOCS_COLLECTION, document.id);
       await setDoc(docRef, {
         id: document.id,
         name: document.name,
@@ -167,39 +185,87 @@ export async function saveDocumentToFirestore(document: DocumentItem): Promise<b
         category: document.category || 'regulation',
         summary: document.summary || '',
       });
-      return true;
+      console.log(`[Firestore] Đã lưu tài liệu "${document.name}" lên Firestore thành công.`);
+      savedToFirestore = true;
     } catch (err) {
-      console.error('Error saving document to Firestore:', err);
+      console.error('[Firestore] Lỗi khi lưu tài liệu lên Firestore:', err);
     }
   }
-  return false;
+
+  // Luôn đồng bộ sang server backup để các máy khác truy cập ngay lập tức
+  try {
+    await fetch('/api/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(document),
+    });
+  } catch (e) {
+    console.warn('[Server] Không thể đồng bộ tài liệu lên server backup:', e);
+  }
+
+  return savedToFirestore;
 }
 
 /**
- * Delete document from Firebase Firestore
+ * Xóa tài liệu khỏi Firebase Firestore và Server backup
  */
 export async function deleteDocumentFromFirestore(docId: string): Promise<boolean> {
-  const db = getFirestoreDb();
-  if (db) {
+  let deletedFromFirestore = false;
+  const activeDb = getFirestoreDb();
+
+  if (activeDb) {
     try {
-      const docRef = doc(db, FIRESTORE_DOCS_COLLECTION, docId);
+      const docRef = doc(activeDb, FIRESTORE_DOCS_COLLECTION, docId);
       await deleteDoc(docRef);
-      return true;
+      console.log(`[Firestore] Đã xóa tài liệu (ID: ${docId}) khỏi Firestore.`);
+      deletedFromFirestore = true;
     } catch (err) {
-      console.error('Error deleting document from Firestore:', err);
+      console.error('[Firestore] Lỗi khi xóa tài liệu khỏi Firestore:', err);
     }
   }
-  return false;
+
+  // Đồng bộ xóa trên server backup
+  try {
+    await fetch(`/api/documents/${docId}`, { method: 'DELETE' });
+  } catch (e) {
+    console.warn('[Server] Không thể gửi lệnh xóa lên server backup:', e);
+  }
+
+  return deletedFromFirestore;
 }
 
 /**
- * Save custom Firebase Config in localStorage
+ * Lưu cấu hình Firebase tùy chỉnh vào localStorage và đồng bộ lên server
  */
-export function saveCustomFirebaseConfig(config: any): void {
+export function saveCustomFirebaseConfig(config: FirebaseConfigOptions): void {
   try {
     localStorage.setItem('tro_ly_phap_ly_custom_firebase_config', JSON.stringify(config));
-    firestoreInstance = null; // reset instance so it re-inits
+    reinitFirebase(config);
+    
+    // Đồng bộ lên server để mọi máy khác truy cập trang web đều nhận được cấu hình này
+    fetch('/api/firebase-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    }).catch((e) => {
+      console.warn('[Server] Không thể lưu cấu hình Firebase lên server:', e);
+    });
   } catch (e) {
     console.error('Error saving firebase config:', e);
   }
+}
+
+/**
+ * Đồng bộ toàn bộ tài liệu lên server dự phòng
+ */
+async function syncDocsToServerBackup(docs: DocumentItem[]) {
+  try {
+    for (const d of docs) {
+      await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(d),
+      });
+    }
+  } catch (_) {}
 }

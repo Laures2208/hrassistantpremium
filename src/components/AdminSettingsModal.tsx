@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Key,
@@ -16,6 +16,7 @@ import {
 import { AppConfig, QuotaState } from '../types';
 import { DEFAULT_MODEL, FALLBACK_MODELS } from '../services/gemini';
 import { saveCustomFirebaseConfig, isFirebaseConfigured } from '../services/firebase';
+import { getActiveFirebaseConfig } from '../config/firebase';
 
 interface AdminSettingsModalProps {
   isOpen: boolean;
@@ -47,8 +48,22 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
     return config.customApiKey || '';
   });
   const [newAdminPassword, setNewAdminPassword] = useState('');
-  const [firebaseApiKey, setFirebaseApiKey] = useState('');
-  const [firebaseProjectId, setFirebaseProjectId] = useState('');
+  const [firebaseApiKey, setFirebaseApiKey] = useState(() => {
+    const active = getActiveFirebaseConfig();
+    return active.apiKey || '';
+  });
+  const [firebaseProjectId, setFirebaseProjectId] = useState(() => {
+    const active = getActiveFirebaseConfig();
+    return active.projectId || '';
+  });
+
+  useEffect(() => {
+    if (isOpen) {
+      const active = getActiveFirebaseConfig();
+      if (active.apiKey) setFirebaseApiKey(active.apiKey);
+      if (active.projectId) setFirebaseProjectId(active.projectId);
+    }
+  }, [isOpen]);
 
   const [testStatus, setTestStatus] = useState<{ loading: boolean; success?: boolean; message?: string } | null>(
     null

@@ -102,16 +102,26 @@ export default function App() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // 1. Fetch initial documents ONCE on boot from Firebase Firestore or sample fallback
+  // 1. Fetch initial documents ONCE on boot from Firebase Firestore (Single Source of Truth)
   useEffect(() => {
     async function loadDocs() {
       setIsDocsLoading(true);
       try {
+        console.log('[App] Tự động tải dữ liệu từ Firebase Firestore (Single Source of Truth)...');
         const result = await fetchInitialDocuments();
-        setDocuments(result.documents);
-        setDocSource(result.source);
+        
+        // Quy tắc đè dữ liệu mẫu: NẾU Firestore có ít nhất 1 file -> XÓA HOÀN TOÀN dữ liệu mẫu (Sample data)
+        if (result.documents.length > 0 && result.source !== 'sample') {
+          console.log(`[App] Nhận ${result.documents.length} tài liệu thực tế từ ${result.source}. Đã loại bỏ 100% dữ liệu mẫu.`);
+          setDocuments(result.documents);
+          setDocSource(result.source);
+        } else {
+          console.log('[App] Chưa có tài liệu người dùng tải lên, sử dụng dữ liệu mẫu pháp lý.');
+          setDocuments(result.documents);
+          setDocSource('sample');
+        }
       } catch (err) {
-        console.error('Error loading initial documents:', err);
+        console.error('[App] Lỗi khi tải tài liệu ban đầu:', err);
       } finally {
         setIsDocsLoading(false);
       }
@@ -363,7 +373,10 @@ export default function App() {
       <AdminFileManagerModal
         isOpen={activeModal === 'files'}
         documents={documents}
-        onDocumentsUpdated={(updatedDocs) => setDocuments(updatedDocs)}
+        onDocumentsUpdated={(updatedDocs) => {
+          setDocuments(updatedDocs);
+          setDocSource(updatedDocs.some((d) => d.source !== 'sample') ? 'firestore' : 'sample');
+        }}
         onClose={() => setActiveModal(null)}
       />
 

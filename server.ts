@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
@@ -9,7 +10,16 @@ dotenv.config();
 const PORT = 3000;
 const app = express();
 
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '25mb' }));
+
+// Helper for local data persistence directory
+const DATA_DIR = path.join(process.cwd(), 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const FIREBASE_CONFIG_FILE = path.join(DATA_DIR, 'firebase-config.json');
+const DOCUMENTS_FILE = path.join(DATA_DIR, 'documents.json');
 
 // Lazy load Gemini AI instance
 function getGeminiClient(customKey?: string): GoogleGenAI {
@@ -34,6 +44,114 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     hasApiKey: !!process.env.GEMINI_API_KEY,
   });
+});
+
+// Firebase config sync endpoint (allows any device to connect to the same Firebase instance)
+app.get('/api/firebase-config', (req, res) => {
+  try {
+    // 1. Check environment variables first
+    const envConfig = {
+      apiKey: process.env.VITE_FIREBASE_API_KEY || '',
+      authDomain: process.env.VITE_FIREBASE_AUTH_DOMAIN || '',
+      projectId: process.env.VITE_FIREBASE_PROJECT_ID || '',
+      storageBucket: process.env.VITE_FIREBASE_STORAGE_BUCKET || '',
+      messagingSenderId: process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
+      appId: process.env.VITE_FIREBASE_APP_ID || '',
+    };
+
+    if (envConfig.apiKey && envConfig.projectId) {
+      return res.json(envConfig);
+    }
+
+    // 2. Check saved config file
+    if (fs.existsSync(FIREBASE_CONFIG_FILE)) {
+      const raw = fs.readFileSync(FIREBASE_CONFIG_FILE, 'utf-8');
+      const saved = JSON.parse(raw);
+      if (saved && saved.apiKey && saved.projectId) {
+        return res.json(saved);
+      }
+    }
+
+    return res.json({});
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to read Firebase config' });
+  }
+});
+
+app.post('/api/firebase-config', (req, res) => {
+  try {
+    const config = req.body;
+    if (config && config.apiKey && config.projectId) {
+      fs.writeFileSync(FIREBASE_CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+      return res.json({ success: true, message: 'Firebase configuration saved successfully' });
+    }
+    return res.status(400).json({ error: 'apiKey and projectId are required' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to save Firebase config' });
+  }
+});
+
+// Shared documents persistence across all devices
+app.get('/api/documents', (req, res) => {
+  try {
+    if (fs.existsSync(DOCUMENTS_FILE)) {
+      const raw = fs.readFileSync(DOCUMENTS_FILE, 'utf-8');
+      const docs = JSON.parse(raw);
+      return res.json(Array.isArray(docs) ? docs : []);
+    }
+    return res.json([]);
+  } catch (err) {
+    return res.json([]);
+  }
+});
+
+app.post('/api/documents', (req, res) => {
+  try {
+    const docItem = req.body;
+    if (!docItem || !docItem.id) {
+      return res.status(400).json({ error: 'Invalid document payload' });
+    }
+
+    let existingDocs: any[] = [];
+    if (fs.existsSync(DOCUMENTS_FILE)) {
+      try {
+        const raw = fs.readFileSync(DOCUMENTS_FILE, 'utf-8');
+        existingDocs = JSON.parse(raw);
+        if (!Array.isArray(existingDocs)) existingDocs = [];
+      } catch (_) {
+        existingDocs = [];
+      }
+    }
+
+    const index = existingDocs.findIndex((d) => d.id === docItem.id);
+    if (index >= 0) {
+      existingDocs[index] = docItem;
+    } else {
+      existingDocs.unshift(docItem);
+    }
+
+    fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(existingDocs, null, 2), 'utf-8');
+    return res.json({ success: true, count: existingDocs.length });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to persist document' });
+  }
+});
+
+app.delete('/api/documents/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    if (fs.existsSync(DOCUMENTS_FILE)) {
+      const raw = fs.readFileSync(DOCUMENTS_FILE, 'utf-8');
+      let existingDocs = JSON.parse(raw);
+      if (Array.isArray(existingDocs)) {
+        existingDocs = existingDocs.filter((d) => d.id !== id);
+        fs.writeFileSync(DOCUMENTS_FILE, JSON.stringify(existingDocs, null, 2), 'utf-8');
+      }
+    }
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to delete document' });
+  }
 });
 
 // SSE Streaming chat endpoint
