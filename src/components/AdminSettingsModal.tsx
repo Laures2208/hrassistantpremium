@@ -37,7 +37,15 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
   const [model, setModel] = useState(config.model || DEFAULT_MODEL);
   const [temperature, setTemperature] = useState(config.temperature ?? 0.2);
   const [maxTokens, setMaxTokens] = useState(config.maxOutputTokens || 2048);
-  const [apiKey, setApiKey] = useState(config.customApiKey || '');
+  const [apiKey, setApiKey] = useState(() => {
+    try {
+      const stored = localStorage.getItem('GEMINI_API_KEY');
+      if (stored && stored.trim()) return stored.trim();
+    } catch (e) {
+      console.warn('Error reading GEMINI_API_KEY from localStorage:', e);
+    }
+    return config.customApiKey || '';
+  });
   const [newAdminPassword, setNewAdminPassword] = useState('');
   const [firebaseApiKey, setFirebaseApiKey] = useState('');
   const [firebaseProjectId, setFirebaseProjectId] = useState('');
@@ -52,12 +60,25 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
 
+    const cleanApiKey = apiKey.trim();
+
+    // 1. Mandatory requirement: Persist API Key in localStorage with key 'GEMINI_API_KEY'
+    try {
+      if (cleanApiKey) {
+        localStorage.setItem('GEMINI_API_KEY', cleanApiKey);
+      } else {
+        localStorage.removeItem('GEMINI_API_KEY');
+      }
+    } catch (err) {
+      console.error('Failed to write GEMINI_API_KEY to localStorage:', err);
+    }
+
     const updated: AppConfig = {
       ...config,
       model,
       temperature,
       maxOutputTokens: maxTokens,
-      customApiKey: apiKey.trim() || undefined,
+      customApiKey: cleanApiKey || undefined,
       customAdminPassword: newAdminPassword.trim() || config.customAdminPassword,
     };
 
@@ -105,24 +126,24 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 sm:p-6 backdrop-blur-sm">
-      <div className="flex h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-700/80 bg-slate-900 shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-3 sm:p-6 backdrop-blur-sm dark:bg-slate-950/80">
+      <div className="flex h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl overflow-hidden dark:border-slate-700/80 dark:bg-slate-900">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-6 py-4">
+        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4 dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400">
               <Settings className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Cài Đặt & Cấu Hình AI</h2>
-              <p className="text-xs text-slate-400">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Cài Đặt & Cấu Hình AI</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Tùy chỉnh mô hình Gemini, API Key, tham số nhiệt độ và hạn mức
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="rounded-xl p-2 text-slate-400 hover:bg-slate-800 hover:text-white transition"
+            className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-white transition"
           >
             <X className="h-5 w-5" />
           </button>
@@ -131,20 +152,20 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
         {/* Settings Body */}
         <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-6 space-y-5">
           {/* AI Model Section */}
-          <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/40">
             <div className="flex items-center gap-2 mb-3">
-              <Cpu className="h-4 w-4 text-amber-400" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+              <Cpu className="h-4 w-4 text-amber-500 dark:text-amber-400" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
                 Mô hình Trí tuệ Nhân tạo (Gemini AI Model)
               </h3>
             </div>
 
             <div className="space-y-2">
-              <label className="block text-xs text-slate-400">Chọn mô hình Gemini:</label>
+              <label className="block text-xs text-slate-600 dark:text-slate-400">Chọn mô hình Gemini:</label>
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2.5 text-xs text-white focus:border-amber-500 focus:outline-none"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-xs text-slate-900 focus:border-amber-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
               >
                 <option value="gemini-3.8-flash">gemini-3.8-flash (Khuyên dùng - Phản hồi siêu tốc & thông minh)</option>
                 <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Tiết kiệm chi phí & tốc độ cao)</option>
@@ -330,21 +351,21 @@ export const AdminSettingsModal: React.FC<AdminSettingsModalProps> = ({
           </div>
 
           {/* Modal Actions */}
-          <div className="sticky bottom-0 flex items-center justify-between border-t border-slate-800 bg-slate-900/90 pt-4 backdrop-blur-sm">
+          <div className="sticky bottom-0 flex items-center justify-between border-t border-slate-200 bg-white/95 pt-4 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/90">
             {saveToast ? (
-              <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold">
+              <span className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
                 <CheckCircle2 className="h-4 w-4" />
                 Đã lưu cấu hình thành công!
               </span>
             ) : (
-              <span className="text-xs text-slate-500">Các thay đổi sẽ được áp dụng ngay lập tức</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">Các thay đổi sẽ được áp dụng ngay lập tức</span>
             )}
 
             <div className="flex items-center gap-3">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-xl px-4 py-2 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition"
+                className="rounded-xl px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white transition"
               >
                 Đóng
               </button>

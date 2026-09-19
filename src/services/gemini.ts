@@ -3,21 +3,49 @@ import { ChatMessage, DocumentItem, AppConfig } from '../types';
 
 export const DEFAULT_MODEL = 'gemini-3.8-flash';
 export const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-preview-12-2025', 'gemini-1.5-flash'];
-export const MAX_DOC_CONTEXT_LENGTH = 15000;
+export const MAX_DOC_CONTEXT_LENGTH = 250000;
 export const SEND_COOLDOWN_SECONDS = 4;
 
-const SYSTEM_INSTRUCTION = `Bạn là "Trợ Lý Pháp Lý Lao Động", một chuyên gia cố vấn pháp lý cao cấp hàng đầu về Pháp luật Lao động Việt Nam (Bộ luật Lao động 2019 số 45/2019/QH14, các Nghị định 145/2020/NĐ-CP, Nghị định 12/2022/NĐ-CP, Luật BHXH, Luật An toàn vệ sinh lao động...).
+export const SYSTEM_INSTRUCTION = `Bạn là Trợ lý Pháp lý Lao động. Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA TẬP TRUNG 100% VÀO BỘ TÀI LIỆU ĐƯỢC CUNG CẤP DƯỚI ĐÂY.
 
-QUY TẮC PHẢN HỒI:
-1. TRẢ LỜI CHÍNH XÁC, RÕ RÀNG, CHUẨN XÁC THEO LUẬT: Luôn dẫn chiếu chính xác tên Điều, Khoản, Văn bản pháp luật liên quan (ví dụ: "Theo Khoản 1 Điều 35 Bộ luật Lao động 2019...").
-2. DỰA TRÊN TÀI LIỆU KNOWLEDGE BASE ĐƯỢC CUNG CẤP: Ưu tiên tra cứu nội dung trong các tài liệu, nội quy, hợp đồng lao động đính kèm trong phần "BỘ TRI THỨC PHÁP LÝ & NỘI QUY".
-3. TRÌNH BÀY DỄ HIỂU:
-   - Dùng gạch đầu dòng, bảng biểu hoặc in đậm các mốc quan trọng (thời hạn, tỷ lệ %, số tiền, ngày nghỉ).
-   - Cung cấp ví dụ thực tế hoặc công thức tính toán cụ thể nếu hỏi về tiền lương, trợ cấp thôi việc, lương làm thêm giờ, chế độ thai sản.
-4. LƯU Ý PHÁP LÝ: Nếu tình huống cần kiểm tra thêm hồ sơ cụ thể hoặc có nguy cơ tranh chấp pháp lý phức tạp, hãy đưa ra khuyến nghị tham vấn cơ quan quản lý lao động hoặc luật sư có chuyên môn.`;
+CÁC QUY TẮC BẮT BUỘC TUÂN THỦ:
+1. KHÔNG THÊM BỚT, KHÔNG TỰ SUY ĐOÁN: Chỉ sử dụng các thông tin, điều khoản, con số có mặt trong tài liệu. Tuyệt đối không tự sáng tạo hoặc lấy kiến thức ngoài tài liệu.
+2. TRẢ LỜI ĐÚNG TRỌNG TÂM: Đi thẳng vào câu trả lời ngắn gọn, rõ ràng, không vòng vèo.
+3. TRÍCH DẪN NGUỒN: Chỉ rõ thông tin đó nằm ở File nào, Điều mấy, Mục mấy (nếu trong tài liệu có đề cập).
+4. XỬ LÝ KHI THIẾU THÔNG TIN: Nếu câu hỏi của người dùng KHÔNG CÓ trong bộ tài liệu được cung cấp, bạn BẮT BUỘC trả lời chính xác câu sau:
+   "Cảm ơn bạn! Thông tin này hiện không được đề cập trong các văn bản/nội quy hiện có của hệ thống. Bạn vui lòng liên hệ bộ phận Quản trị/HR để được hỗ trợ thêm."
+   (Tuyệt đối không cố gắng bịa ra câu trả lời).`;
 
 /**
- * Trims document context to stay under 15,000 characters and removes excessive whitespace.
+ * Resolves the active Gemini API Key following strict priority:
+ * 1. localStorage ('GEMINI_API_KEY')
+ * 2. Custom API key passed in AppConfig
+ * 3. Environment variable VITE_GEMINI_API_KEY
+ */
+export function getStoredApiKey(customApiKey?: string): string {
+  try {
+    const fromStorage = localStorage.getItem('GEMINI_API_KEY');
+    if (fromStorage && fromStorage.trim()) {
+      return fromStorage.trim();
+    }
+  } catch (e) {
+    console.warn('Cannot read GEMINI_API_KEY from localStorage:', e);
+  }
+
+  if (customApiKey && customApiKey.trim()) {
+    return customApiKey.trim();
+  }
+
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
+    return import.meta.env.VITE_GEMINI_API_KEY.trim();
+  }
+
+  return '';
+}
+
+/**
+ * Bundles the textContent of ALL active documents into clean context for Gemini RAG.
+ * Cleans redundant spaces and excessive line breaks while preserving full document structure.
  */
 export function buildDocumentContext(documents: DocumentItem[]): string {
   if (!documents || documents.length === 0) return '';
@@ -26,17 +54,21 @@ export function buildDocumentContext(documents: DocumentItem[]): string {
   const sections: string[] = [];
 
   for (const doc of documents) {
-    if (!doc.textContent) continue;
+    if (!doc.textContent || !doc.textContent.trim()) continue;
+
+    // Clean redundant spaces and excessive newlines to optimize tokens
     const cleanText = doc.textContent
       .replace(/[ \t]+/g, ' ')
+      .replace(/\r\n/g, '\n')
       .replace(/\n\s*\n\s*\n+/g, '\n\n')
       .trim();
 
-    // Check if adding this document exceeds limit
-    const sectionHeader = `\n=== TÀI LIỆU: ${doc.name} (${doc.category || 'Luật/Nội quy'}) ===\n`;
+    if (!cleanText) continue;
+
+    const sectionHeader = `\n========================================\n[TÀI LIỆU / VĂN BẢN]: ${doc.name}\n[LOẠI TÀI LIỆU]: ${doc.category || 'Văn bản quy định'}\n========================================\n`;
     const availableSpace = MAX_DOC_CONTEXT_LENGTH - totalChars - sectionHeader.length;
 
-    if (availableSpace <= 200) {
+    if (availableSpace <= 100) {
       break;
     }
 
@@ -44,15 +76,14 @@ export function buildDocumentContext(documents: DocumentItem[]): string {
       sections.push(`${sectionHeader}${cleanText}`);
       totalChars += sectionHeader.length + cleanText.length;
     } else {
-      // Truncate to available space
-      const truncated = cleanText.substring(0, availableSpace) + '\n...[Đã rút gọn tài liệu do giới hạn độ dài]';
+      const truncated = cleanText.substring(0, availableSpace) + '\n...[Đã rút gọn bớt phần cuối tài liệu do giới hạn độ dài]';
       sections.push(`${sectionHeader}${truncated}`);
       totalChars += sectionHeader.length + truncated.length;
       break;
     }
   }
 
-  return sections.join('\n');
+  return sections.join('\n\n');
 }
 
 /**
@@ -87,6 +118,8 @@ export async function* streamGeminiResponse(
     ? `[BỘ TRI THỨC PHÁP LÝ & NỘI QUY]\n${docContext}\n\n[CÂU HỎI CỦA NGƯỜI DÙNG]\n${userQuery}`
     : userQuery;
 
+  const activeApiKey = getStoredApiKey(config.customApiKey);
+
   // 1. Try server-side streaming API first
   try {
     const response = await fetch('/api/chat/stream', {
@@ -98,6 +131,7 @@ export async function* streamGeminiResponse(
         model: config.model || DEFAULT_MODEL,
         temperature: config.temperature || 0.2,
         maxOutputTokens: config.maxOutputTokens || 2048,
+        apiKey: activeApiKey || undefined,
       }),
     });
 
@@ -142,13 +176,11 @@ export async function* streamGeminiResponse(
   }
 
   // 2. Client-side SDK fallback (for static Vercel SPA deployments or custom key)
-  const apiKey =
-    config.customApiKey ||
-    (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_GEMINI_API_KEY : '');
+  const apiKey = activeApiKey;
 
   if (!apiKey) {
     throw new Error(
-      'Không tìm thấy API Key của Gemini. Quản trị viên vui lòng cấu hình VITE_GEMINI_API_KEY hoặc nhập API Key trong phần "Cài đặt & API Key".'
+      'Không tìm thấy API Key của Gemini. Quản trị viên vui lòng nhập API Key trong phần "Cài đặt & API Key" hoặc cấu hình VITE_GEMINI_API_KEY.'
     );
   }
 

@@ -1,3 +1,5 @@
+export type ThemeMode = 'dark' | 'light';
+
 export type DocumentCategory = 'law' | 'regulation' | 'contract' | 'guide' | 'custom';
 
 export interface DocumentItem {

@@ -14,7 +14,7 @@ import { DocumentItem } from '../types';
 import { SAMPLE_LABOR_LAWS } from '../data/sampleLaborLaws';
 
 const FIRESTORE_DOCS_COLLECTION = 'documents';
-const LOCAL_STORAGE_DOCS_KEY = 'tro_ly_phap_ly_cached_documents';
+export const LOCAL_STORAGE_DOCS_KEY = 'SAVED_DOCUMENTS';
 
 // Check for config from environment variables or custom config
 function getFirebaseConfig() {
@@ -75,8 +75,11 @@ export function isFirebaseConfigured(): boolean {
 /**
  * Load documents once on app boot.
  * 1. Checks Firebase Firestore if configured.
- * 2. If Firestore has docs, returns them.
- * 3. If Firestore has 0 docs or is not configured, checks local cache or returns Sample Data.
+ * 2. If Firestore has docs, caches to localStorage (SAVED_DOCUMENTS) and returns them.
+ * 3. If Firestore fails or is empty, reads from localStorage (SAVED_DOCUMENTS).
+ * 4. CRITICAL RULE: If ANY user documents exist (Firestore or localStorage),
+ *    ALL sample data is completely omitted/hidden. Only use 100% user documents!
+ * 5. If 0 user documents exist, falls back to SAMPLE_LABOR_LAWS.
  */
 export async function fetchInitialDocuments(): Promise<{
   documents: DocumentItem[];
@@ -110,39 +113,44 @@ export async function fetchInitialDocuments(): Promise<{
           });
         });
 
-        // Cache locally for instant offline availability
-        try {
-          localStorage.setItem(LOCAL_STORAGE_DOCS_KEY, JSON.stringify(firestoreDocs));
-        } catch (storageErr) {
-          console.warn('Local storage cache limit:', storageErr);
-        }
+        if (firestoreDocs.length > 0) {
+          // Sync backup copy to localStorage under 'SAVED_DOCUMENTS'
+          try {
+            localStorage.setItem(LOCAL_STORAGE_DOCS_KEY, JSON.stringify(firestoreDocs));
+          } catch (storageErr) {
+            console.warn('Local storage cache limit:', storageErr);
+          }
 
-        return { documents: firestoreDocs, source: 'firestore' };
+          // User documents exist in Firestore -> Hide all sample data
+          return { documents: firestoreDocs, source: 'firestore' };
+        }
       }
     } catch (err) {
-      console.warn('Error fetching documents from Firestore, using fallback:', err);
+      console.warn('Error fetching documents from Firestore, checking localStorage backup:', err);
     }
   }
 
-  // Check if user has uploaded docs stored locally
+  // 2. Read from localStorage (key: SAVED_DOCUMENTS)
   try {
     const cached = localStorage.getItem(LOCAL_STORAGE_DOCS_KEY);
     if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return { documents: parsed, source: 'local' };
+      const parsed: DocumentItem[] = JSON.parse(cached);
+      // Filter out any legacy sample data if present to ensure only user docs remain
+      const userDocs = parsed.filter((d) => d.source !== 'sample');
+      if (userDocs.length > 0) {
+        return { documents: userDocs, source: 'local' };
       }
     }
   } catch (e) {
-    console.warn('Could not read cached docs:', e);
+    console.warn('Could not read cached docs from localStorage:', e);
   }
 
-  // Default to rich built-in sample legal laws
+  // 3. If zero user documents exist anywhere, default to sample labor laws
   return { documents: SAMPLE_LABOR_LAWS, source: 'sample' };
 }
 
 /**
- * Save or update document to Firebase Firestore (and local state fallback)
+ * Save or update document to Firebase Firestore (and local storage backup)
  */
 export async function saveDocumentToFirestore(document: DocumentItem): Promise<boolean> {
   const db = getFirestoreDb();

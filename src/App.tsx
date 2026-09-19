@@ -13,6 +13,7 @@ import {
   QuotaState,
   AdminModalType,
   AppConfig,
+  ThemeMode,
 } from './types';
 import { fetchInitialDocuments } from './services/firebase';
 import { getDailyQuota, incrementDailyQuota } from './services/quota';
@@ -22,6 +23,36 @@ const STORAGE_CONFIG_KEY = 'tro_ly_phap_ly_app_config';
 const STORAGE_CHAT_KEY = 'tro_ly_phap_ly_chat_history';
 
 export default function App() {
+  // Theme State: 'dark' | 'light' (Default to 'light' for new visitors)
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    try {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch (e) {
+      console.warn('Could not read theme from localStorage:', e);
+    }
+    return 'light';
+  });
+
+  // Sync theme with localStorage and document.documentElement root
+  useEffect(() => {
+    try {
+      localStorage.setItem('theme', theme);
+    } catch (e) {
+      console.warn('Could not save theme to localStorage:', e);
+    }
+
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
+
+  const handleToggleTheme = () => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  };
+
   // Application State
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [docSource, setDocSource] = useState<'firestore' | 'sample' | 'local'>('sample');
@@ -42,17 +73,31 @@ export default function App() {
 
   // AI Configuration State
   const [config, setConfig] = useState<AppConfig>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_CONFIG_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.error('Error loading config:', e);
-    }
-    return {
+    let baseConfig: AppConfig = {
       model: DEFAULT_MODEL,
       temperature: 0.2,
       maxOutputTokens: 2048,
     };
+    try {
+      const saved = localStorage.getItem(STORAGE_CONFIG_KEY);
+      if (saved) {
+        baseConfig = { ...baseConfig, ...JSON.parse(saved) };
+      }
+    } catch (e) {
+      console.error('Error loading config:', e);
+    }
+
+    // Ensure persistent GEMINI_API_KEY is prioritized from localStorage
+    try {
+      const storedKey = localStorage.getItem('GEMINI_API_KEY');
+      if (storedKey && storedKey.trim()) {
+        baseConfig.customApiKey = storedKey.trim();
+      }
+    } catch (e) {
+      console.warn('Error reading GEMINI_API_KEY:', e);
+    }
+
+    return baseConfig;
   });
 
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -252,13 +297,15 @@ export default function App() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100 font-sans selection:bg-amber-500 selection:text-slate-950">
-      {/* 1. Header Navigation Bar */}
+    <div className="flex min-h-screen flex-col bg-slate-100 text-slate-800 font-sans selection:bg-amber-500 selection:text-slate-950 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100">
+      {/* 1. Header Navigation Bar with Light/Dark Theme Switcher */}
       <Header
         quota={quota}
         isAdminLoggedIn={isAdminLoggedIn}
         onOpenAdminModal={handleOpenAdminModal}
         onAdminLogout={handleAdminLogout}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
       />
 
       {/* 2. Main Chat Workspace */}
@@ -276,7 +323,7 @@ export default function App() {
               <div className="flex justify-end pb-1">
                 <button
                   onClick={handleClearChat}
-                  className="text-[11px] text-slate-500 hover:text-rose-400 transition"
+                  className="text-[11px] text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 transition"
                 >
                   Xóa lịch sử đoạn chat
                 </button>
